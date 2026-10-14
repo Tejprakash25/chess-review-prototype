@@ -1,5 +1,11 @@
 
-import { useMemo, useState, type FormEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+} from "react";
 import { Chess } from "chess.js";
 import LegalNotices from "./components/LegalNotices";
 import GameReviewBoard from "./components/GameReviewBoard";
@@ -10,6 +16,10 @@ import {
   type ChessComProfileResult,
   type ChessComGame,
 } from "./services/chesscomApi";
+import {
+  analyzeGamePositions,
+  type MoveAnalysis,
+} from "./services/stockfishAnalysis";
 
 const features = [
   {
@@ -114,7 +124,6 @@ function formatTimeControl(timeControl?: string): string {
 
   if (seconds >= 60 && seconds % 60 === 0) {
     const minutes = seconds / 60;
-
     return increment > 0
       ? `${minutes} min + ${increment} sec`
       : `${minutes} min`;
@@ -124,6 +133,148 @@ function formatTimeControl(timeControl?: string): string {
     ? `${seconds} sec + ${increment} sec`
     : `${seconds} sec`;
 }
+
+function formatEvaluation(result: MoveAnalysis): string {
+  if (result.mateInWhite !== null) {
+    const mate = result.mateInWhite;
+
+    if (mate === 0) return "Forced mate";
+    return mate > 0 ? `White mates in ${mate}` : `Black mates in ${Math.abs(mate)}`;
+  }
+
+  if (result.evaluationCpWhite === null) return "Evaluation unavailable";
+
+  const score = result.evaluationCpWhite;
+  const sign = score > 0 ? "+" : "";
+
+  return `${sign}${score.toFixed(2)}`;
+}
+
+type ReviewSummary = {
+  totalMoves: number;
+  ratedMoves: number;
+  good: number;
+  inaccuracies: number;
+  mistakes: number;
+  blunders: number;
+  unrated: number;
+  averageLoss: number | null;
+  accuracy: number | null;
+  biggestLoss: MoveAnalysis | null;
+  findings: MoveAnalysis[];
+};
+
+function buildReviewSummary(
+  results: MoveAnalysis[],
+): ReviewSummary {
+  const summary: ReviewSummary = {
+    totalMoves: results.length,
+    ratedMoves: 0,
+    good: 0,
+    inaccuracies: 0,
+    mistakes: 0,
+    blunders: 0,
+    unrated: 0,
+    averageLoss: null,
+    accuracy: null,
+    biggestLoss: null,
+    findings: [],
+  };
+
+  const ratedResults: MoveAnalysis[] = [];
+
+  for (const result of results) {
+    switch (result.classification) {
+      case "good":
+        summary.good += 1;
+        break;
+      case "inaccuracy":
+        summary.inaccuracies += 1;
+        break;
+      case "mistake":
+        summary.mistakes += 1;
+        break;
+      case "blunder":
+        summary.blunders += 1;
+        break;
+      case "unrated":
+        summary.unrated += 1;
+        break;
+    }
+
+    if (
+      result.evaluationLossPawns !== null &&
+      Number.isFinite(result.evaluationLossPawns) &&
+      result.evaluationLossPawns >= 0
+    ) {
+      ratedResults.push(result);
+    }
+  }
+
+  summary.ratedMoves = ratedResults.length;
+
+  if (ratedResults.length > 0) {
+    const totalLoss = ratedResults.reduce(
+      (sum, result) => sum + result.evaluationLossPawns!,
+      0,
+    );
+
+    const averageLoss = totalLoss / ratedResults.length;
+
+    summary.averageLoss = averageLoss;
+
+    // Prototype heuristic, not an official Chess.com accuracy formula.
+    // An average loss of 0 pawns maps to 100%.
+    // An average loss of 2 pawns or more maps to 0%.
+    summary.accuracy = Math.max(
+      0,
+      Math.min(100, 100 * (1 - averageLoss / 2)),
+    );
+
+    summary.biggestLoss = ratedResults.reduce((largest, result) =>
+      result.evaluationLossPawns! > largest.evaluationLossPawns!
+        ? result
+        : largest,
+    );
+  }
+
+  summary.findings = results
+    .filter(
+      (result) =>
+        result.classification === "inaccuracy" ||
+        result.classification === "mistake" ||
+        result.classification === "blunder",
+    )
+    .sort(
+      (a, b) =>
+        (b.evaluationLossPawns ?? 0) -
+        (a.evaluationLossPawns ?? 0),
+    );
+
+  return summary;
+}
+
+function formatWhiteEvaluation(
+  evaluationCpWhite: number | null,
+  mateInWhite: number | null,
+): string {
+  if (mateInWhite !== null) {
+    if (mateInWhite === 0) return "Forced mate";
+
+    return mateInWhite > 0
+      ? `White mates in ${mateInWhite}`
+      : `Black mates in ${Math.abs(mateInWhite)}`;
+  }
+
+  if (evaluationCpWhite === null) {
+    return "Evaluation unavailable";
+  }
+
+  const sign = evaluationCpWhite > 0 ? "+" : "";
+
+  return `${sign}${evaluationCpWhite.toFixed(2)}`;
+}
+
 
 function App() {
   const [username, setUsername] = useState("");
@@ -144,6 +295,14 @@ function App() {
   const [pgnError, setPgnError] = useState("");
   const [currentMoveIndex, setCurrentMoveIndex] = useState(0);
 
+  const [analysisResults, setAnalysisResults] = useState<MoveAnalysis[]>([]);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisProgress, setAnalysisProgress] = useState({
+    completed: 0,
+    total: 0,
+  });
+  const [analysisError, setAnalysisError] = useState("");
+
   const selectedGame =
     games.find((game) => game.url === selectedGameUrl) ?? null;
 
@@ -159,11 +318,76 @@ function App() {
     return replay.fen();
   }, [parsedGame, currentMoveIndex]);
 
+  const currentAnalysis =
+    analysisResults.find((item) => item.ply === currentMoveIndex) ?? null;
+  
+  const reviewSummary = useMemo(
+  () => buildReviewSummary(analysisResults),
+  [analysisResults],
+);
+
+  useEffect(() => {
+    if (!parsedGame) {
+      setAnalysisResults([]);
+      setIsAnalyzing(false);
+      setAnalysisProgress({ completed: 0, total: 0 });
+      setAnalysisError("");
+      return;
+    }
+
+    const controller = new AbortController();
+
+    setAnalysisResults([]);
+    setAnalysisError("");
+    setIsAnalyzing(true);
+    setAnalysisProgress({
+      completed: 0,
+      total: parsedGame.moves.length,
+    });
+
+    analyzeGamePositions(
+      parsedGame.initialFen,
+      parsedGame.moves,
+      (completed, total) => {
+        setAnalysisProgress({ completed, total });
+      },
+      controller.signal,
+    )
+      .then((results) => {
+        setAnalysisResults(results);
+      })
+      .catch((error: unknown) => {
+        if (
+          error instanceof Error &&
+          error.name === "AbortError"
+        ) {
+          return;
+        }
+
+        setAnalysisError(
+          error instanceof Error
+            ? error.message
+            : "Stockfish analysis failed. Check the engine files and try again.",
+        );
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setIsAnalyzing(false);
+        }
+      });
+
+    return () => controller.abort();
+  }, [parsedGame]);
+
   const resetGameSelection = () => {
     setSelectedGameUrl("");
     setParsedGame(null);
     setPgnError("");
     setCurrentMoveIndex(0);
+    setAnalysisResults([]);
+    setAnalysisProgress({ completed: 0, total: 0 });
+    setAnalysisError("");
+    setIsAnalyzing(false);
   };
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -253,6 +477,8 @@ function App() {
     setParsedGame(null);
     setPgnError("");
     setCurrentMoveIndex(0);
+    setAnalysisResults([]);
+    setAnalysisError("");
 
     if (typeof game.pgn !== "string" || !game.pgn.trim()) {
       setPgnError(
@@ -288,7 +514,7 @@ function App() {
   };
 
   const handleReplayKeyDown = (
-    event: React.KeyboardEvent<HTMLDivElement>,
+    event: KeyboardEvent<HTMLDivElement>,
   ) => {
     if (event.target !== event.currentTarget || !parsedGame) return;
 
@@ -323,26 +549,22 @@ function App() {
             CHESS <strong>REVIEW</strong>
           </span>
         </a>
-
         <span className="topbar-note">Understand every move</span>
       </header>
 
       <main>
         <section className="hero" aria-labelledby="hero-title">
           <p className="eyebrow">YOUR GAME. YOUR NEXT LEVEL.</p>
-
           <h1 id="hero-title">
             Every move has
             <br />
             <span>something to teach.</span>
           </h1>
-
           <p className="hero-description">
             Review your completed Chess.com games, explore critical
             positions, and understand your decisions. Turn every game into
             an opportunity to improve.
           </p>
-
           <div className="hero-actions">
             <a
               className="primary-cta"
@@ -351,7 +573,6 @@ function App() {
             >
               Review a game <span aria-hidden="true">↗</span>
             </a>
-
             <p className="cta-note">
               Completed games only · Prototype in development
             </p>
@@ -378,7 +599,6 @@ function App() {
             noValidate
           >
             <label htmlFor="chess-username">Chess.com username</label>
-
             <div className="username-input-row">
               <input
                 id="chess-username"
@@ -401,7 +621,6 @@ function App() {
                 minLength={3}
                 maxLength={25}
               />
-
               <button
                 className="primary-cta"
                 type="submit"
@@ -448,7 +667,6 @@ function App() {
                     loading="lazy"
                   />
                 )}
-
                 <div>
                   <h3 id="player-result-title">
                     {playerResult.player.name ||
@@ -469,18 +687,15 @@ function App() {
                   aria-labelledby="archives-title"
                 >
                   <h3 id="archives-title">Available game months</h3>
-
                   <ul className="archive-list">
                     {[...playerResult.archives].reverse().map((archiveUrl) => {
                       const match = archiveUrl.match(
                         /\/games\/(\d{4})\/(\d{2})\/?$/,
                       );
-
                       if (!match) return null;
 
                       const year = Number(match[1]);
                       const month = Number(match[2]);
-
                       const monthLabel = new Date(
                         Date.UTC(year, month - 1, 1),
                       ).toLocaleDateString(undefined, {
@@ -488,13 +703,14 @@ function App() {
                         year: "numeric",
                         timeZone: "UTC",
                       });
-
                       const isSelected = selectedArchive === archiveUrl;
 
                       return (
-                        <li key={archiveUrl} className="archive-item">
+                        <li
+                          key={archiveUrl}
+                          className="archive-item"
+                        >
                           <span>{monthLabel}</span>
-
                           <button
                             type="button"
                             className="archive-select-button"
@@ -554,7 +770,6 @@ function App() {
                       Couldn't load these games
                     </p>
                     <p>{gamesError}</p>
-
                     {selectedArchive && (
                       <button
                         type="button"
@@ -610,12 +825,10 @@ function App() {
                         >
                           Game selected for review
                         </p>
-
                         <p>
                           {selectedGame.white.username} vs.{" "}
                           {selectedGame.black.username}
                         </p>
-
                         <p className="form-hint">
                           {formatGameDate(selectedGame.end_time)}
                           {selectedGame.time_class
@@ -635,7 +848,7 @@ function App() {
                         {parsedGame && (
                           <div className="pgn-review">
                             <p className="selected-game-title">
-                              Game replay
+                              Stockfish game analysis
                             </p>
 
                             <div className="pgn-summary">
@@ -653,6 +866,9 @@ function App() {
                                 Result: {parsedGame.headers.Result || "*"}
                               </span>
                               <span>
+                                Date: {formatGameDate(selectedGame.end_time)}
+                              </span>
+                              <span>
                                 Time control:{" "}
                                 {formatTimeControl(selectedGame.time_control)}
                               </span>
@@ -661,29 +877,273 @@ function App() {
                                 {selectedGame.time_class?.toUpperCase() ||
                                   "Not available"}
                               </span>
-                              <span>
-                                Date: {formatGameDate(selectedGame.end_time)}
-                              </span>
-                              <span>
-                                Moves played: {parsedGame.moves.length}
-                              </span>
+                              <span>Plies: {parsedGame.moves.length}</span>
                               <span>
                                 Current ply: {currentMoveIndex} /{" "}
                                 {parsedGame.moves.length}
                               </span>
                             </div>
 
+                            {isAnalyzing && (
+                              <div
+                                className="analysis-progress"
+                                role="status"
+                                aria-live="polite"
+                              >
+                                <p>
+                                  Analysing positions with Stockfish:{" "}
+                                  {analysisProgress.completed} /{" "}
+                                  {analysisProgress.total}
+                                </p>
+                                <progress
+                                  value={analysisProgress.completed}
+                                  max={Math.max(analysisProgress.total, 1)}
+                                />
+                                <p className="form-hint">
+                                  Analysis runs locally in your browser. Long
+                                  games may take some time.
+                                </p>
+                              </div>
+                            )}
+
+                            {analysisError && (
+                              <div className="games-state" role="alert">
+                                <p className="games-state-title">
+                                  Engine analysis failed
+                                </p>
+                                <p>{analysisError}</p>
+                                <p className="form-hint">
+                                  Check that both Stockfish files exist in
+                                  public/stockfish and are served successfully.
+                                </p>
+                              </div>
+                            )}
+
+
+{!isAnalyzing &&
+  !analysisError &&
+  analysisResults.length > 0 && (
+    <section
+      className="review-report"
+      aria-labelledby="review-report-title"
+    >
+      <h4 id="review-report-title">Game review report</h4>
+
+      <div className="review-report-stats">
+        <div className="review-stat">
+          <span>Moves analysed</span>
+          <strong>{reviewSummary.totalMoves}</strong>
+        </div>
+
+        <div className="review-stat">
+          <span>Good moves</span>
+          <strong>{reviewSummary.good}</strong>
+        </div>
+
+        <div className="review-stat">
+          <span>Inaccuracies</span>
+          <strong>{reviewSummary.inaccuracies}</strong>
+        </div>
+
+        <div className="review-stat">
+          <span>Mistakes</span>
+          <strong>{reviewSummary.mistakes}</strong>
+        </div>
+
+        <div className="review-stat">
+          <span>Blunders</span>
+          <strong>{reviewSummary.blunders}</strong>
+        </div>
+
+        <div className="review-stat">
+          <span>Unrated</span>
+          <strong>{reviewSummary.unrated}</strong>
+        </div>
+      </div>
+
+      <div className="review-accuracy">
+        <p className="eyebrow">ESTIMATED ACCURACY</p>
+
+        <strong className="review-accuracy-value">
+          {reviewSummary.accuracy === null
+            ? "Unavailable"
+            : `${reviewSummary.accuracy.toFixed(1)}%`}
+        </strong>
+
+        <p>
+          {reviewSummary.averageLoss === null
+            ? "There are not enough rated moves to calculate this estimate."
+            : `Average evaluation loss: ${reviewSummary.averageLoss.toFixed(2)} pawns across ${reviewSummary.ratedMoves} rated moves.`}
+        </p>
+
+        <p className="form-hint">
+          This is a prototype estimate, not an official Chess.com
+          accuracy score. It is calculated as:
+          {" "}max(0, min(100, 100 × (1 − average evaluation loss ÷ 2))).
+          An average loss of 0 pawns gives 100%; 2 pawns or more
+          gives 0%. Unrated moves are excluded.
+        </p>
+      </div>
+
+      {reviewSummary.biggestLoss && (
+        <div className="review-biggest-loss">
+          <strong>Largest evaluation loss</strong>
+          <p>
+            {reviewSummary.biggestLoss.color === "w"
+              ? "White"
+              : "Black"}{" "}
+            played {reviewSummary.biggestLoss.playedSan} on move{" "}
+            {reviewSummary.biggestLoss.moveNumber}, losing{" "}
+            {reviewSummary.biggestLoss.evaluationLossPawns!.toFixed(2)}{" "}
+            pawns by this engine-based estimate.
+          </p>
+
+          <button
+            type="button"
+            className="archive-select-button"
+            onClick={() =>
+              goToMove(reviewSummary.biggestLoss!.ply)
+            }
+          >
+            Review this move
+          </button>
+        </div>
+      )}
+
+      <div className="review-findings">
+        <h5>Critical findings</h5>
+
+        {reviewSummary.findings.length === 0 ? (
+          <p>
+            No inaccuracies, mistakes, or blunders were identified
+            by the current classification thresholds.
+          </p>
+        ) : (
+          <ol className="review-finding-list">
+            {reviewSummary.findings.map((finding) => (
+              <li
+                key={finding.ply}
+                className="review-finding"
+              >
+                <div>
+                  <span
+                    className={`move-classification move-classification-${finding.classification}`}
+                  >
+                    {finding.classification}
+                  </span>
+
+                  <p>
+                    Move {finding.moveNumber}
+                    {finding.color === "w" ? "." : "..."}{" "}
+                    {finding.color === "w" ? "White" : "Black"}{" "}
+                    played <strong>{finding.playedSan}</strong>.
+                  </p>
+
+                  <p className="form-hint">
+                    Evaluation before:{" "}
+                    {formatEvaluation(finding)}.
+                    {" "}Evaluation after:{" "}
+                    {formatWhiteEvaluation(
+                      finding.evaluationAfterCpWhite,
+                      finding.mateAfterInWhite,
+                    )}
+                    .
+                  </p>
+
+                  <p className="form-hint">
+                    Estimated evaluation loss:{" "}
+                    {finding.evaluationLossPawns === null
+                      ? "Unavailable"
+                      : `${finding.evaluationLossPawns.toFixed(2)} pawns`}
+                    .
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  className="archive-select-button"
+                  onClick={() => goToMove(finding.ply)}
+                  aria-label={`Review move ${finding.moveNumber}, ${finding.playedSan}`}
+                >
+                  Review move
+                </button>
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+    </section>
+  )}
+
+
+                            {currentAnalysis && (
+                              <section
+                                className="engine-evaluation"
+                                aria-labelledby="engine-evaluation-title"
+                              >
+                                <h4 id="engine-evaluation-title">
+                                  Position evaluation
+                                </h4>
+                                <div className="pgn-summary">
+                                  <span>
+                                    Evaluation:{" "}
+                                    <strong>
+                                      {formatEvaluation(currentAnalysis)}
+                                    </strong>
+                                  </span>
+                                  <span>
+                                    Engine depth: {currentAnalysis.depth}
+                                  </span>
+                                  <span>
+                                    Played move:{" "}
+                                    {currentAnalysis.playedSan}
+                                  </span>
+                                  <span>
+                                    Suggested move:{" "}
+                                    <strong>
+                                      {currentAnalysis.bestMoveSan}
+                                    </strong>
+                                  </span>
+                                </div>
+                                <p>
+  <strong>Move quality:</strong>{" "}
+  <span
+    className={`move-classification move-classification-${currentAnalysis.classification}`}
+  >
+    {currentAnalysis.classification === "unrated"
+      ? "Not rated"
+      : currentAnalysis.classification.charAt(0).toUpperCase() +
+        currentAnalysis.classification.slice(1)}
+  </span>
+</p>
+
+{currentAnalysis.evaluationLossPawns !== null && (
+  <p>
+    <strong>Evaluation lost:</strong>{" "}
+    {currentAnalysis.evaluationLossPawns.toFixed(2)} pawns
+  </p>
+)}
+                                <p className="form-hint">
+                                  Evaluation is from White's perspective.
+                                  The suggested move is Stockfish's best move
+                                  for the position before the displayed played
+                                  move.
+                                </p>
+                              </section>
+                            )}
+
+                            <h4>Board replay</h4>
                             <div
                               className="review-board-keyboard"
                               tabIndex={0}
                               role="group"
-                              aria-label="Chessboard replay. Focus this area and use the left and right arrow keys to move backward or forward. Home goes to the start and End goes to the final position."
+                              aria-label="Chessboard replay. Use left and right arrow keys to navigate moves, Home for the start, and End for the final position."
                               onKeyDown={handleReplayKeyDown}
                             >
                               <GameReviewBoard positionFen={currentFen} />
                               <p className="form-hint">
-                                Keyboard: ← previous move · → next move ·
-                                Home start · End finish
+                                Keyboard: ← previous · → next · Home start ·
+                                End finish
                               </p>
                             </div>
 
@@ -700,7 +1160,6 @@ function App() {
                               >
                                 First
                               </button>
-
                               <button
                                 type="button"
                                 onClick={() =>
@@ -711,7 +1170,6 @@ function App() {
                               >
                                 ← Previous
                               </button>
-
                               <span
                                 className="replay-position"
                                 aria-live="polite"
@@ -719,9 +1177,8 @@ function App() {
                               >
                                 {currentMoveIndex === 0
                                   ? "Starting position"
-                                  : `After ${Math.ceil(currentMoveIndex / 2)}.${currentMoveIndex % 2 === 1 ? " White" : " Black"}`}
+                                  : `After ply ${currentMoveIndex}`}
                               </span>
-
                               <button
                                 type="button"
                                 onClick={() =>
@@ -734,7 +1191,6 @@ function App() {
                               >
                                 Next →
                               </button>
-
                               <button
                                 type="button"
                                 onClick={() =>
@@ -774,33 +1230,40 @@ function App() {
 
                             <h4>Move history</h4>
                             <ol className="pgn-move-list">
-                              {parsedGame.moves.map((move, index) => (
-                                <li
-                                  key={`${index}-${move}`}
-                                  className={
-                                    currentMoveIndex === index + 1
-                                      ? "pgn-move-current"
-                                      : ""
-                                  }
-                                >
-                                  <button
-                                    type="button"
-                                    onClick={() => goToMove(index + 1)}
-                                    aria-current={
-                                      currentMoveIndex === index + 1
-                                        ? "step"
-                                        : undefined
+                              {parsedGame.moves.map((move, index) => {
+                                const result = analysisResults[index];
+                                const isCurrent =
+                                  currentMoveIndex === index + 1;
+
+                                return (
+                                  <li
+                                    key={`${index}-${move}`}
+                                    className={
+                                      isCurrent ? "pgn-move-current" : ""
                                     }
-                                    aria-label={`Go to ply ${index + 1}, ${move}`}
                                   >
-                                    <span className="move-number">
-                                      {Math.floor(index / 2) + 1}
-                                      {index % 2 === 0 ? "." : "..."}
-                                    </span>{" "}
-                                    {move}
-                                  </button>
-                                </li>
-                              ))}
+                                    <button
+                                      type="button"
+                                      onClick={() => goToMove(index + 1)}
+                                      aria-current={
+                                        isCurrent ? "step" : undefined
+                                      }
+                                      aria-label={`Go to ply ${index + 1}, ${move}`}
+                                    >
+                                      <span className="move-number">
+                                        {Math.floor(index / 2) + 1}
+                                        {index % 2 === 0 ? "." : "..."}
+                                      </span>{" "}
+                                      {move}
+                                    </button>
+                                    {result && (
+                                      <span className="move-evaluation">
+                                        {formatEvaluation(result)}
+                                      </span>
+                                    )}
+                                  </li>
+                                );
+                              })}
                             </ol>
 
                             <details className="pgn-details">
@@ -848,7 +1311,6 @@ function App() {
                                   {formatGameDate(game.end_time)}
                                 </p>
                               </div>
-
                               <span
                                 className={`game-result game-result-${result.toLowerCase()}`}
                               >
@@ -858,11 +1320,11 @@ function App() {
 
                             <div className="game-metadata">
                               <span>
-                                {game.time_class
-                                  ? game.time_class.toUpperCase()
-                                  : "Game"}
+                                {game.time_class?.toUpperCase() || "Game"}
                               </span>
-                              <span>{formatTimeControl(game.time_control)}</span>
+                              <span>
+                                {formatTimeControl(game.time_control)}
+                              </span>
                               {typeof game.rated === "boolean" && (
                                 <span>
                                   {game.rated ? "Rated" : "Unrated"}
@@ -912,12 +1374,10 @@ function App() {
                 key={feature.number}
               >
                 <span className="feature-number">{feature.number}</span>
-
                 <div className="feature-copy">
                   <h3>{feature.title}</h3>
                   <p>{feature.description}</p>
                 </div>
-
                 <span className="feature-arrow" aria-hidden="true">
                   ↗
                 </span>

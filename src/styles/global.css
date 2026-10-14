@@ -1470,6 +1470,205 @@ a:not(.wordmark) {
   }
 }
 
+/* Phase 7, Steps 1–3: Stockfish analysis UI */
+
+.analysis-progress,
+.engine-evaluation {
+  margin: 18px 0;
+  padding: 16px;
+  border: 1px solid rgba(154, 245, 208, 0.22);
+  border-radius: 14px;
+  background: rgba(154, 245, 208, 0.045);
+}
+
+.analysis-progress p,
+.engine-evaluation p {
+  line-height: 1.6;
+}
+
+.analysis-progress progress {
+  display: block;
+  width: 100%;
+  height: 8px;
+  margin: 12px 0;
+  overflow: hidden;
+  accent-color: #9af5d0;
+}
+
+.engine-evaluation h4 {
+  margin-top: 0;
+}
+
+.engine-evaluation strong {
+  color: #9af5d0;
+}
+
+.move-evaluation {
+  display: inline-block;
+  margin: 4px 0 4px 6px;
+  padding: 3px 6px;
+  border: 1px solid rgba(154, 245, 208, 0.18);
+  border-radius: 6px;
+  color: #9af5d0;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.analysis-progress progress:focus-visible {
+  outline: 2px solid #9af5d0;
+  outline-offset: 4px;
+}
+
+@media (max-width: 480px) {
+  .analysis-progress,
+  .engine-evaluation {
+    padding: 12px;
+  }
+
+  .move-evaluation {
+    margin-left: 0;
+  }
+}
+
+/* Phase 7: Move-quality classifications */
+.move-classification {
+  display: inline-block;
+  padding: 3px 9px;
+  border: 1px solid rgba(154, 245, 208, 0.24);
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.move-classification-good {
+  color: #9af5d0;
+}
+
+.move-classification-inaccuracy {
+  color: #f2d477;
+  border-color: rgba(242, 212, 119, 0.4);
+}
+
+.move-classification-mistake {
+  color: #ffad70;
+  border-color: rgba(255, 173, 112, 0.4);
+}
+
+.move-classification-blunder {
+  color: #ff8585;
+  border-color: rgba(255, 133, 133, 0.45);
+}
+
+.move-classification-unrated {
+  color: #b6c2bd;
+}
+
+/* Phase 8: Game review report */
+.review-report {
+  margin: 24px 0;
+  padding: 20px;
+  border: 1px solid rgba(154, 245, 208, 0.2);
+  border-radius: 16px;
+  background: rgba(154, 245, 208, 0.035);
+}
+
+.review-report h4,
+.review-report h5 {
+  margin-top: 0;
+}
+
+.review-report-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 16px 0;
+}
+
+.review-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid rgba(154, 245, 208, 0.14);
+  border-radius: 10px;
+  overflow-wrap: anywhere;
+}
+
+.review-stat span {
+  color: var(--text-muted, #b6c2bd);
+  font-size: 0.82rem;
+}
+
+.review-stat strong,
+.review-accuracy-value {
+  color: #9af5d0;
+  font-variant-numeric: tabular-nums;
+}
+
+.review-stat strong {
+  font-size: 1.3rem;
+}
+
+.review-accuracy,
+.review-biggest-loss {
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.review-accuracy-value {
+  display: block;
+  margin: 6px 0;
+  font-size: 2rem;
+}
+
+.review-findings {
+  margin-top: 22px;
+}
+
+.review-finding-list {
+  display: grid;
+  gap: 12px;
+  padding-left: 22px;
+}
+
+.review-finding {
+  padding: 14px;
+  border: 1px solid rgba(154, 245, 208, 0.14);
+  border-radius: 12px;
+}
+
+.review-finding > div p {
+  line-height: 1.55;
+}
+
+.review-finding > button {
+  margin-top: 8px;
+}
+
+@media (max-width: 600px) {
+  .review-report {
+    padding: 14px;
+  }
+
+  .review-report-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .review-stat {
+    padding: 10px;
+  }
+
+  .review-finding {
+    padding: 11px;
+  }
+}
+
+
+
 
 
 
