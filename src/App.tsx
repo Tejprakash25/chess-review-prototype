@@ -1,7 +1,7 @@
-
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
   type KeyboardEvent,
@@ -303,6 +303,9 @@ function App() {
   });
   const [analysisError, setAnalysisError] = useState("");
 
+  const boardReplayRef = useRef<HTMLElement | null>(null);
+  const boardKeyboardRef = useRef<HTMLDivElement | null>(null);
+
   const selectedGame =
     games.find((game) => game.url === selectedGameUrl) ?? null;
 
@@ -320,7 +323,7 @@ function App() {
 
   const currentAnalysis =
     analysisResults.find((item) => item.ply === currentMoveIndex) ?? null;
-  
+
   const reviewSummary = useMemo(
   () => buildReviewSummary(analysisResults),
   [analysisResults],
@@ -342,7 +345,7 @@ function App() {
     setIsAnalyzing(true);
     setAnalysisProgress({
       completed: 0,
-      total: parsedGame.moves.length,
+      total: parsedGame.moves.length + 1,
     });
 
     analyzeGamePositions(
@@ -377,6 +380,24 @@ function App() {
       });
 
     return () => controller.abort();
+  }, [parsedGame]);
+
+
+  useEffect(() => {
+    if (!parsedGame) return;
+
+    const frameId = window.requestAnimationFrame(() => {
+      const prefersReducedMotion = window.matchMedia(
+        "(prefers-reduced-motion: reduce)",
+      ).matches;
+
+      boardReplayRef.current?.scrollIntoView({
+        behavior: prefersReducedMotion ? "auto" : "smooth",
+        block: "start",
+      });
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
   }, [parsedGame]);
 
   const resetGameSelection = () => {
@@ -513,6 +534,46 @@ function App() {
     );
   };
 
+
+  const reviewMove = (index: number) => {
+    goToMove(index);
+
+    window.requestAnimationFrame(() => {
+      const board = boardReplayRef.current;
+      if (!board) return;
+
+      const prefersReducedMotion = window.matchMedia(
+        "(prefers-reduced-motion: reduce)",
+      ).matches;
+
+      board.scrollIntoView({
+        behavior: prefersReducedMotion ? "auto" : "smooth",
+        block: "start",
+      });
+      boardKeyboardRef.current?.focus({ preventScroll: true });
+    });
+  };
+
+  const returnToGameList = () => {
+    setParsedGame(null);
+    setCurrentMoveIndex(0);
+    setPgnError("");
+  };
+
+
+  const selectHistoryMove = (index: number) => {
+    const stackedReviewLayout = window.matchMedia(
+      "(max-width: 900px), (max-height: 500px) and (max-width: 1100px)",
+    ).matches;
+
+    if (stackedReviewLayout) {
+      reviewMove(index);
+      return;
+    }
+
+    goToMove(index);
+  };
+
   const handleReplayKeyDown = (
     event: KeyboardEvent<HTMLDivElement>,
   ) => {
@@ -539,7 +600,7 @@ function App() {
   };
 
   return (
-    <div className="page-shell">
+    <div className={`page-shell${parsedGame ? " page-shell--reviewing" : ""}`}>
       <header className="topbar">
         <a className="wordmark" href="/" aria-label="Chess Review home">
           <span className="brand-mark" aria-hidden="true">
@@ -819,11 +880,20 @@ function App() {
                         className="selected-game-panel"
                         aria-labelledby="selected-game-title"
                       >
+                        {parsedGame && (
+                          <button
+                            type="button"
+                            className="review-back-button"
+                            onClick={returnToGameList}
+                          >
+                            <span aria-hidden="true">←</span> All games
+                          </button>
+                        )}
                         <p
                           id="selected-game-title"
                           className="selected-game-title"
                         >
-                          Game selected for review
+                          {parsedGame ? "Now reviewing" : "Game selected for review"}
                         </p>
                         <p>
                           {selectedGame.white.username} vs.{" "}
@@ -847,439 +917,410 @@ function App() {
 
                         {parsedGame && (
                           <div className="pgn-review">
-                            <p className="selected-game-title">
-                              Stockfish game analysis
-                            </p>
-
-                            <div className="pgn-summary">
-                              <span>
-                                White:{" "}
-                                {parsedGame.headers.White ||
-                                  selectedGame.white.username}
-                              </span>
-                              <span>
-                                Black:{" "}
-                                {parsedGame.headers.Black ||
-                                  selectedGame.black.username}
-                              </span>
-                              <span>
-                                Result: {parsedGame.headers.Result || "*"}
-                              </span>
-                              <span>
-                                Date: {formatGameDate(selectedGame.end_time)}
-                              </span>
-                              <span>
-                                Time control:{" "}
-                                {formatTimeControl(selectedGame.time_control)}
-                              </span>
-                              <span>
-                                Game type:{" "}
-                                {selectedGame.time_class?.toUpperCase() ||
-                                  "Not available"}
-                              </span>
-                              <span>Plies: {parsedGame.moves.length}</span>
-                              <span>
-                                Current ply: {currentMoveIndex} /{" "}
-                                {parsedGame.moves.length}
-                              </span>
-                            </div>
-
-                            {isAnalyzing && (
-                              <div
-                                className="analysis-progress"
-                                role="status"
-                                aria-live="polite"
-                              >
-                                <p>
-                                  Analysing positions with Stockfish:{" "}
-                                  {analysisProgress.completed} /{" "}
-                                  {analysisProgress.total}
-                                </p>
-                                <progress
-                                  value={analysisProgress.completed}
-                                  max={Math.max(analysisProgress.total, 1)}
-                                />
-                                <p className="form-hint">
-                                  Analysis runs locally in your browser. Long
-                                  games may take some time.
-                                </p>
-                              </div>
-                            )}
-
-                            {analysisError && (
-                              <div className="games-state" role="alert">
-                                <p className="games-state-title">
-                                  Engine analysis failed
-                                </p>
-                                <p>{analysisError}</p>
-                                <p className="form-hint">
-                                  Check that both Stockfish files exist in
-                                  public/stockfish and are served successfully.
-                                </p>
-                              </div>
-                            )}
-
-
-{!isAnalyzing &&
-  !analysisError &&
-  analysisResults.length > 0 && (
-    <section
-      className="review-report"
-      aria-labelledby="review-report-title"
-    >
-      <h4 id="review-report-title">Game review report</h4>
-
-      <div className="review-report-stats">
-        <div className="review-stat">
-          <span>Moves analysed</span>
-          <strong>{reviewSummary.totalMoves}</strong>
-        </div>
-
-        <div className="review-stat">
-          <span>Good moves</span>
-          <strong>{reviewSummary.good}</strong>
-        </div>
-
-        <div className="review-stat">
-          <span>Inaccuracies</span>
-          <strong>{reviewSummary.inaccuracies}</strong>
-        </div>
-
-        <div className="review-stat">
-          <span>Mistakes</span>
-          <strong>{reviewSummary.mistakes}</strong>
-        </div>
-
-        <div className="review-stat">
-          <span>Blunders</span>
-          <strong>{reviewSummary.blunders}</strong>
-        </div>
-
-        <div className="review-stat">
-          <span>Unrated</span>
-          <strong>{reviewSummary.unrated}</strong>
-        </div>
-      </div>
-
-      <div className="review-accuracy">
-        <p className="eyebrow">ESTIMATED ACCURACY</p>
-
-        <strong className="review-accuracy-value">
-          {reviewSummary.accuracy === null
-            ? "Unavailable"
-            : `${reviewSummary.accuracy.toFixed(1)}%`}
-        </strong>
-
-        <p>
-          {reviewSummary.averageLoss === null
-            ? "There are not enough rated moves to calculate this estimate."
-            : `Average evaluation loss: ${reviewSummary.averageLoss.toFixed(2)} pawns across ${reviewSummary.ratedMoves} rated moves.`}
-        </p>
-
-        <p className="form-hint">
-          This is a prototype estimate, not an official Chess.com
-          accuracy score. It is calculated as:
-          {" "}max(0, min(100, 100 × (1 − average evaluation loss ÷ 2))).
-          An average loss of 0 pawns gives 100%; 2 pawns or more
-          gives 0%. Unrated moves are excluded.
-        </p>
-      </div>
-
-      {reviewSummary.biggestLoss && (
-        <div className="review-biggest-loss">
-          <strong>Largest evaluation loss</strong>
-          <p>
-            {reviewSummary.biggestLoss.color === "w"
-              ? "White"
-              : "Black"}{" "}
-            played {reviewSummary.biggestLoss.playedSan} on move{" "}
-            {reviewSummary.biggestLoss.moveNumber}, losing{" "}
-            {reviewSummary.biggestLoss.evaluationLossPawns!.toFixed(2)}{" "}
-            pawns by this engine-based estimate.
-          </p>
-
-          <button
-            type="button"
-            className="archive-select-button"
-            onClick={() =>
-              goToMove(reviewSummary.biggestLoss!.ply)
-            }
-          >
-            Review this move
-          </button>
-        </div>
-      )}
-
-      <div className="review-findings">
-        <h5>Critical findings</h5>
-
-        {reviewSummary.findings.length === 0 ? (
-          <p>
-            No inaccuracies, mistakes, or blunders were identified
-            by the current classification thresholds.
-          </p>
-        ) : (
-          <ol className="review-finding-list">
-            {reviewSummary.findings.map((finding) => (
-              <li
-                key={finding.ply}
-                className="review-finding"
-              >
-                <div>
-                  <span
-                    className={`move-classification move-classification-${finding.classification}`}
-                  >
-                    {finding.classification}
-                  </span>
-
-                  <p>
-                    Move {finding.moveNumber}
-                    {finding.color === "w" ? "." : "..."}{" "}
-                    {finding.color === "w" ? "White" : "Black"}{" "}
-                    played <strong>{finding.playedSan}</strong>.
-                  </p>
-
-                  <p className="form-hint">
-                    Evaluation before:{" "}
-                    {formatEvaluation(finding)}.
-                    {" "}Evaluation after:{" "}
-                    {formatWhiteEvaluation(
-                      finding.evaluationAfterCpWhite,
-                      finding.mateAfterInWhite,
-                    )}
-                    .
-                  </p>
-
-                  <p className="form-hint">
-                    Estimated evaluation loss:{" "}
-                    {finding.evaluationLossPawns === null
-                      ? "Unavailable"
-                      : `${finding.evaluationLossPawns.toFixed(2)} pawns`}
-                    .
-                  </p>
-                </div>
-
-                <button
-                  type="button"
-                  className="archive-select-button"
-                  onClick={() => goToMove(finding.ply)}
-                  aria-label={`Review move ${finding.moveNumber}, ${finding.playedSan}`}
-                >
-                  Review move
-                </button>
-              </li>
-            ))}
-          </ol>
-        )}
-      </div>
-    </section>
-  )}
-
-
-                            {currentAnalysis && (
+                            <div
+                              className="review-workspace"
+                            >
                               <section
-                                className="engine-evaluation"
-                                aria-labelledby="engine-evaluation-title"
+                                className="review-main-column"
+                                aria-label="Board and engine evaluation"
                               >
-                                <h4 id="engine-evaluation-title">
-                                  Position evaluation
-                                </h4>
-                                <div className="pgn-summary">
+                                <div className="pgn-summary" aria-label="Game details">
                                   <span>
-                                    Evaluation:{" "}
-                                    <strong>
-                                      {formatEvaluation(currentAnalysis)}
-                                    </strong>
+                                    White: {parsedGame.headers.White || selectedGame.white.username}
                                   </span>
                                   <span>
-                                    Engine depth: {currentAnalysis.depth}
+                                    Black: {parsedGame.headers.Black || selectedGame.black.username}
                                   </span>
                                   <span>
-                                    Played move:{" "}
-                                    {currentAnalysis.playedSan}
+                                    Result: {parsedGame.headers.Result || "*"}
                                   </span>
                                   <span>
-                                    Suggested move:{" "}
-                                    <strong>
-                                      {currentAnalysis.bestMoveSan}
-                                    </strong>
+                                    Date: {formatGameDate(selectedGame.end_time)}
+                                  </span>
+                                  <span>
+                                    Time control: {formatTimeControl(selectedGame.time_control)}
+                                  </span>
+                                  <span>
+                                    Game type: {selectedGame.time_class?.toUpperCase() || "Not available"}
+                                  </span>
+                                  <span>Plies: {parsedGame.moves.length}</span>
+                                  <span>
+                                    Current ply: {currentMoveIndex} / {parsedGame.moves.length}
                                   </span>
                                 </div>
-                                <p>
-  <strong>Move quality:</strong>{" "}
-  <span
-    className={`move-classification move-classification-${currentAnalysis.classification}`}
-  >
-    {currentAnalysis.classification === "unrated"
-      ? "Not rated"
-      : currentAnalysis.classification.charAt(0).toUpperCase() +
-        currentAnalysis.classification.slice(1)}
-  </span>
-</p>
 
-{currentAnalysis.evaluationLossPawns !== null && (
-  <p>
-    <strong>Evaluation lost:</strong>{" "}
-    {currentAnalysis.evaluationLossPawns.toFixed(2)} pawns
-  </p>
-)}
-                                <p className="form-hint">
-                                  Evaluation is from White's perspective.
-                                  The suggested move is Stockfish's best move
-                                  for the position before the displayed played
-                                  move.
-                                </p>
-                              </section>
-                            )}
+                                {isAnalyzing && (
+                                  <div
+                                    className="analysis-progress"
+                                    role="status"
+                                    aria-live="polite"
+                                  >
+                                    <p>
+                                      Analysing positions with Stockfish: {analysisProgress.completed} / {analysisProgress.total}
+                                    </p>
+                                    <progress
+                                      value={analysisProgress.completed}
+                                      max={Math.max(analysisProgress.total, 1)}
+                                    />
+                                    <p className="form-hint">
+                                      Analysis runs locally in your browser. Long games may take some time.
+                                    </p>
+                                  </div>
+                                )}
 
-                            <h4>Board replay</h4>
-                            <div
-                              className="review-board-keyboard"
-                              tabIndex={0}
-                              role="group"
-                              aria-label="Chessboard replay. Use left and right arrow keys to navigate moves, Home for the start, and End for the final position."
-                              onKeyDown={handleReplayKeyDown}
-                            >
-                              <GameReviewBoard positionFen={currentFen} />
-                              <p className="form-hint">
-                                Keyboard: ← previous · → next · Home start ·
-                                End finish
-                              </p>
-                            </div>
+                                {analysisError && (
+                                  <div className="games-state" role="alert">
+                                    <p className="games-state-title">Engine analysis failed</p>
+                                    <p>{analysisError}</p>
+                                    <p className="form-hint">
+                                      Check that both Stockfish files exist in public/stockfish and are served successfully.
+                                    </p>
+                                  </div>
+                                )}
 
-                            <div
-                              className="replay-controls"
-                              role="group"
-                              aria-label="Game replay controls"
-                            >
-                              <button
-                                type="button"
-                                onClick={() => goToMove(0)}
-                                disabled={currentMoveIndex === 0}
-                                aria-label="Go to starting position"
-                              >
-                                First
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  goToMove(currentMoveIndex - 1)
-                                }
-                                disabled={currentMoveIndex === 0}
-                                aria-label="Previous move"
-                              >
-                                ← Previous
-                              </button>
-                              <span
-                                className="replay-position"
-                                aria-live="polite"
-                                aria-atomic="true"
-                              >
-                                {currentMoveIndex === 0
-                                  ? "Starting position"
-                                  : `After ply ${currentMoveIndex}`}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  goToMove(currentMoveIndex + 1)
-                                }
-                                disabled={
-                                  currentMoveIndex >= parsedGame.moves.length
-                                }
-                                aria-label="Next move"
-                              >
-                                Next →
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  goToMove(parsedGame.moves.length)
-                                }
-                                disabled={
-                                  currentMoveIndex >= parsedGame.moves.length
-                                }
-                                aria-label="Go to final position"
-                              >
-                                Last
-                              </button>
-                            </div>
+                                {currentAnalysis && (
+                                  <section
+                                    className="engine-evaluation"
+                                    aria-labelledby="engine-evaluation-title"
+                                  >
+                                    <div className="review-panel-heading review-panel-heading--compact">
+                                      <div>
+                                        <p className="eyebrow">POSITION DETAIL</p>
+                                        <h4 id="engine-evaluation-title">Position after selected move</h4>
+                                      </div>
+                                      <span className={`move-classification move-classification-${currentAnalysis.classification}`}>
+                                        {currentAnalysis.classification === "unrated"
+                                          ? "Not rated"
+                                          : currentAnalysis.classification}
+                                      </span>
+                                    </div>
+                                    <div className="pgn-summary engine-evaluation-summary">
+                                      <span>
+                                        Evaluation after move: <strong>{formatWhiteEvaluation(currentAnalysis.evaluationAfterCpWhite, currentAnalysis.mateAfterInWhite)}</strong>
+                                      </span>
+                                      <span>Engine depth: {currentAnalysis.depth}</span>
+                                      <span>Played move: <strong>{currentAnalysis.playedSan}</strong></span>
+                                      <span>Best move before it: <strong>{currentAnalysis.bestMoveSan}</strong></span>
+                                    </div>
+                                    {currentAnalysis.evaluationLossPawns !== null && (
+                                      <p className="engine-loss">
+                                        <strong>Estimated evaluation lost:</strong> {currentAnalysis.evaluationLossPawns.toFixed(2)} pawns
+                                      </p>
+                                    )}
+                                    <p className="form-hint">
+                                      The board shows the position after the selected move. The suggested move is Stockfish's choice from the position before that move.
+                                    </p>
+                                  </section>
+                                )}
 
-                            <label
-                              className="move-slider-label"
-                              htmlFor="move-slider"
-                            >
-                              Move position
-                            </label>
-                            <input
-                              id="move-slider"
-                              className="move-slider"
-                              type="range"
-                              min={0}
-                              max={parsedGame.moves.length}
-                              value={currentMoveIndex}
-                              onChange={(event) =>
-                                goToMove(Number(event.target.value))
-                              }
-                              aria-valuetext={
-                                currentMoveIndex === 0
-                                  ? "Starting position"
-                                  : `Ply ${currentMoveIndex} of ${parsedGame.moves.length}`
-                              }
-                            />
+                                <section
+                                  className="board-replay-panel"
+                                  ref={boardReplayRef}
+                                  aria-labelledby="board-replay-title"
+                                >
+                                  <div className="review-panel-heading">
+                                    <div>
+                                      <p className="eyebrow">MOVE BY MOVE</p>
+                                      <h4 id="board-replay-title">Board replay</h4>
+                                    </div>
+                                    <span className="review-position-chip">
+                                      {currentMoveIndex === 0
+                                        ? "Starting position"
+                                        : `After ${currentMoveIndex} of ${parsedGame.moves.length} plies`}
+                                    </span>
+                                  </div>
 
-                            <h4>Move history</h4>
-                            <ol className="pgn-move-list">
-                              {parsedGame.moves.map((move, index) => {
-                                const result = analysisResults[index];
-                                const isCurrent =
-                                  currentMoveIndex === index + 1;
+                                  <div
+                                    className="review-board-keyboard"
+                                    ref={boardKeyboardRef}
+                                    tabIndex={0}
+                                    role="group"
+                                    aria-label="Chessboard replay. Use left and right arrow keys to navigate moves, Home for the start, and End for the final position."
+                                    onKeyDown={handleReplayKeyDown}
+                                  >
+                                    <GameReviewBoard positionFen={currentFen} />
+                                    <p className="form-hint board-keyboard-hint">
+                                      Keyboard: ← previous · → next · Home start · End finish
+                                    </p>
+                                  </div>
 
-                                return (
-                                  <li
-                                    key={`${index}-${move}`}
-                                    className={
-                                      isCurrent ? "pgn-move-current" : ""
-                                    }
+                                  <div
+                                    className="replay-controls"
+                                    role="group"
+                                    aria-label="Game replay controls"
                                   >
                                     <button
                                       type="button"
-                                      onClick={() => goToMove(index + 1)}
-                                      aria-current={
-                                        isCurrent ? "step" : undefined
-                                      }
-                                      aria-label={`Go to ply ${index + 1}, ${move}`}
+                                      onClick={() => goToMove(0)}
+                                      disabled={currentMoveIndex === 0}
+                                      aria-label="Go to starting position"
                                     >
-                                      <span className="move-number">
-                                        {Math.floor(index / 2) + 1}
-                                        {index % 2 === 0 ? "." : "..."}
-                                      </span>{" "}
-                                      {move}
+                                      First
                                     </button>
-                                    {result && (
-                                      <span className="move-evaluation">
-                                        {formatEvaluation(result)}
-                                      </span>
-                                    )}
-                                  </li>
-                                );
-                              })}
-                            </ol>
+                                    <button
+                                      type="button"
+                                      onClick={() => goToMove(currentMoveIndex - 1)}
+                                      disabled={currentMoveIndex === 0}
+                                      aria-label="Previous move"
+                                    >
+                                      <span aria-hidden="true">←</span> Previous
+                                    </button>
+                                    <span
+                                      className="replay-position"
+                                      aria-live="polite"
+                                      aria-atomic="true"
+                                    >
+                                      {currentMoveIndex === 0
+                                        ? "Start"
+                                        : `Ply ${currentMoveIndex} / ${parsedGame.moves.length}`}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => goToMove(currentMoveIndex + 1)}
+                                      disabled={currentMoveIndex >= parsedGame.moves.length}
+                                      aria-label="Next move"
+                                    >
+                                      Next <span aria-hidden="true">→</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => goToMove(parsedGame.moves.length)}
+                                      disabled={currentMoveIndex >= parsedGame.moves.length}
+                                      aria-label="Go to final position"
+                                    >
+                                      Last
+                                    </button>
+                                  </div>
 
-                            <details className="pgn-details">
-                              <summary>PGN headers and final FEN</summary>
-                              <dl className="pgn-header-list">
-                                {Object.entries(parsedGame.headers).map(
-                                  ([key, value]) => (
-                                    <div key={key}>
-                                      <dt>{key}</dt>
-                                      <dd>{value}</dd>
+                                  <div className="move-slider-wrap">
+                                    <label className="move-slider-label" htmlFor="move-slider">
+                                      Move position
+                                    </label>
+                                    <input
+                                      id="move-slider"
+                                      className="move-slider"
+                                      type="range"
+                                      min={0}
+                                      max={parsedGame.moves.length}
+                                      value={currentMoveIndex}
+                                      onChange={(event) => goToMove(Number(event.target.value))}
+                                      aria-valuetext={
+                                        currentMoveIndex === 0
+                                          ? "Starting position"
+                                          : `Ply ${currentMoveIndex} of ${parsedGame.moves.length}`
+                                      }
+                                    />
+                                  </div>
+                                </section>
+                              </section>
+
+                              <aside
+                                className="review-sidebar"
+                                aria-label="Game review report and move history"
+                              >
+                                {!isAnalyzing && !analysisError && analysisResults.length > 0 && (
+                                  <section
+                                    className="review-report"
+                                    aria-labelledby="review-report-title"
+                                  >
+                                    <div className="review-panel-heading review-panel-heading--compact">
+                                      <div>
+                                        <p className="eyebrow">GAME SUMMARY</p>
+                                        <h4 id="review-report-title">Game review report</h4>
+                                      </div>
                                     </div>
-                                  ),
+
+                                    <div className="review-report-stats">
+                                      <div className="review-stat">
+                                        <span>Moves analysed</span>
+                                        <strong>{reviewSummary.totalMoves}</strong>
+                                      </div>
+                                      <div className="review-stat">
+                                        <span>Good moves</span>
+                                        <strong>{reviewSummary.good}</strong>
+                                      </div>
+                                      <div className="review-stat">
+                                        <span>Inaccuracies</span>
+                                        <strong>{reviewSummary.inaccuracies}</strong>
+                                      </div>
+                                      <div className="review-stat">
+                                        <span>Mistakes</span>
+                                        <strong>{reviewSummary.mistakes}</strong>
+                                      </div>
+                                      <div className="review-stat">
+                                        <span>Blunders</span>
+                                        <strong>{reviewSummary.blunders}</strong>
+                                      </div>
+                                      <div className="review-stat">
+                                        <span>Unrated</span>
+                                        <strong>{reviewSummary.unrated}</strong>
+                                      </div>
+                                    </div>
+
+                                    <div className="review-accuracy">
+                                      <p className="eyebrow">ESTIMATED ACCURACY</p>
+                                      <strong className="review-accuracy-value">
+                                        {reviewSummary.accuracy === null
+                                          ? "Unavailable"
+                                          : `${reviewSummary.accuracy.toFixed(1)}%`}
+                                      </strong>
+                                      <p>
+                                        {reviewSummary.averageLoss === null
+                                          ? "There are not enough rated moves to calculate this estimate."
+                                          : `Average evaluation loss: ${reviewSummary.averageLoss.toFixed(2)} pawns across ${reviewSummary.ratedMoves} rated moves.`}
+                                      </p>
+                                      <p className="form-hint">
+                                        This is a prototype estimate, not an official Chess.com accuracy score. Formula: max(0, min(100, 100 × (1 − average loss ÷ 2))). An average loss of 0 pawns gives 100%; 2 pawns or more gives 0%. Unrated moves are excluded.
+                                      </p>
+                                    </div>
+
+                                    {reviewSummary.biggestLoss && (
+                                      <div className="review-biggest-loss">
+                                        <div>
+                                          <strong>Largest evaluation loss</strong>
+                                          <p>
+                                            {reviewSummary.biggestLoss.color === "w" ? "White" : "Black"} played {reviewSummary.biggestLoss.playedSan} on move {reviewSummary.biggestLoss.moveNumber}, losing {reviewSummary.biggestLoss.evaluationLossPawns!.toFixed(2)} pawns by this engine-based estimate.
+                                          </p>
+                                        </div>
+                                        <button
+                                          type="button"
+                                          className="archive-select-button"
+                                          onClick={() => reviewMove(reviewSummary.biggestLoss!.ply)}
+                                        >
+                                          Review this move
+                                        </button>
+                                      </div>
+                                    )}
+
+                                    <div className="review-findings">
+                                      <h5>Critical findings</h5>
+                                      {reviewSummary.findings.length === 0 ? (
+                                        <p>No inaccuracies, mistakes, or blunders were identified by the current classification thresholds.</p>
+                                      ) : (
+                                        <ol className="review-finding-list">
+                                          {reviewSummary.findings.map((finding) => (
+                                            <li key={finding.ply} className="review-finding">
+                                              <div>
+                                                <span className={`move-classification move-classification-${finding.classification}`}>
+                                                  {finding.classification}
+                                                </span>
+                                                <p>
+                                                  Move {finding.moveNumber}{finding.color === "w" ? "." : "..."} {finding.color === "w" ? "White" : "Black"} played <strong>{finding.playedSan}</strong>.
+                                                </p>
+                                                <p className="form-hint">
+                                                  Before: {formatEvaluation(finding)} · After: {formatWhiteEvaluation(finding.evaluationAfterCpWhite, finding.mateAfterInWhite)}
+                                                </p>
+                                                <p className="form-hint">
+                                                  Estimated loss: {finding.evaluationLossPawns === null ? "Unavailable" : `${finding.evaluationLossPawns.toFixed(2)} pawns`}
+                                                </p>
+                                              </div>
+                                              <button
+                                                type="button"
+                                                className="archive-select-button"
+                                                onClick={() => reviewMove(finding.ply)}
+                                                aria-label={`Review move ${finding.moveNumber}, ${finding.playedSan}`}
+                                              >
+                                                Review move
+                                              </button>
+                                            </li>
+                                          ))}
+                                        </ol>
+                                      )}
+                                    </div>
+                                  </section>
                                 )}
-                              </dl>
-                              <code>{parsedGame.finalFen}</code>
-                            </details>
+
+                                {isAnalyzing && (
+                                  <section className="review-waiting" role="status">
+                                    <p className="eyebrow">ANALYSIS IN PROGRESS</p>
+                                    <h4>Building your review</h4>
+                                    <p>Critical findings and move evaluations will appear here when Stockfish finishes.</p>
+                                  </section>
+                                )}
+
+                                <section
+                                  className="move-history-panel"
+                                  aria-labelledby="move-history-title"
+                                >
+                                  <div className="review-panel-heading review-panel-heading--compact">
+                                    <div>
+                                      <p className="eyebrow">NOTATION</p>
+                                      <h4 id="move-history-title">Move history</h4>
+                                    </div>
+                                    <span className="review-position-chip">{Math.ceil(parsedGame.moves.length / 2)} moves</span>
+                                  </div>
+                                  <p className="form-hint move-history-help">
+                                    Select a move to show the position after it.
+                                  </p>
+                                  <ol className="pgn-move-list">
+                                    {Array.from(
+                                      { length: Math.ceil(parsedGame.moves.length / 2) },
+                                      (_, rowIndex) => {
+                                        const whiteIndex = rowIndex * 2;
+                                        const blackIndex = whiteIndex + 1;
+                                        const whiteMove = parsedGame.moves[whiteIndex];
+                                        const blackMove = parsedGame.moves[blackIndex];
+                                        const whiteAnalysis = analysisResults[whiteIndex];
+                                        const blackAnalysis = analysisResults[blackIndex];
+                                        const whiteIsCurrent = currentMoveIndex === whiteIndex + 1;
+                                        const blackIsCurrent = blackMove !== undefined && currentMoveIndex === blackIndex + 1;
+
+                                        return (
+                                          <li className="pgn-move-row" key={`move-${rowIndex + 1}`}>
+                                            <span className="move-number">{rowIndex + 1}.</span>
+                                            <button
+                                              type="button"
+                                              className={`pgn-move-button${whiteIsCurrent ? " pgn-move-active" : ""}`}
+                                              onClick={() => selectHistoryMove(whiteIndex + 1)}
+                                              aria-current={whiteIsCurrent ? "step" : undefined}
+                                              aria-label={`Go to position after White's move ${rowIndex + 1}, ${whiteMove}${whiteAnalysis ? `, evaluation before move ${formatEvaluation(whiteAnalysis)}` : ""}`}
+                                            >
+                                              <span className="pgn-move-san">{whiteMove}</span>
+                                              {whiteAnalysis && (
+                                                <span className="move-evaluation" title={`Evaluation before this move: ${formatEvaluation(whiteAnalysis)}`}>
+                                                  {formatEvaluation(whiteAnalysis)}
+                                                </span>
+                                              )}
+                                            </button>
+                                            {blackMove !== undefined ? (
+                                              <button
+                                                type="button"
+                                                className={`pgn-move-button${blackIsCurrent ? " pgn-move-active" : ""}`}
+                                                onClick={() => selectHistoryMove(blackIndex + 1)}
+                                                aria-current={blackIsCurrent ? "step" : undefined}
+                                                aria-label={`Go to position after Black's move ${rowIndex + 1}, ${blackMove}${blackAnalysis ? `, evaluation before move ${formatEvaluation(blackAnalysis)}` : ""}`}
+                                              >
+                                                <span className="pgn-move-san">{blackMove}</span>
+                                                {blackAnalysis && (
+                                                  <span className="move-evaluation" title={`Evaluation before this move: ${formatEvaluation(blackAnalysis)}`}>
+                                                    {formatEvaluation(blackAnalysis)}
+                                                  </span>
+                                                )}
+                                              </button>
+                                            ) : (
+                                              <span className="pgn-move-empty" aria-hidden="true">—</span>
+                                            )}
+                                          </li>
+                                        );
+                                      },
+                                    )}
+                                  </ol>
+                                </section>
+
+                                <details className="pgn-details">
+                                  <summary>PGN headers and final FEN</summary>
+                                  <dl className="pgn-header-list">
+                                    {Object.entries(parsedGame.headers).map(([key, value]) => (
+                                      <div key={key}>
+                                        <dt>{key}</dt>
+                                        <dd>{value}</dd>
+                                      </div>
+                                    ))}
+                                  </dl>
+                                  <code>{parsedGame.finalFen}</code>
+                                </details>
+                              </aside>
+                            </div>
                           </div>
                         )}
                       </div>
